@@ -10,142 +10,120 @@
 #include <string.h>
 #include <unistd.h>
 
-#define PROGRAM_NAME "pgen"
-
-#define _warn(...) do {					\
-		if(!quiet)						\
-			error(0, 0, __VA_ARGS__);	\
-	} while(0)
-
-#define STRTOUMAX_BASE 10
-
-#define LOWER "abcdefghijklmnopqrstuvwxyz"
-#define LOWER_L 26
-
-#define NUMERIC "0123456789"
-#define NUMERIC_L 10
-
-#define SPECIAL "!@#$%^&*()-_=+`~[]{}\\|;:'\",.<>/?"
-#define SPECIAL_L 32
-
-#define UPPER "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-#define UPPER_L 26
-
-/* Disable warnings */
-static bool quiet;
-
 static struct option const long_opts[] = {
+	{"all", no_argument, NULL, 'A'},
+	{"allow-zero", no_argument, NULL, 'z'},
 	{"help", no_argument, NULL, 'h'},
 	{"lower", no_argument, NULL, 'L'},
 	{"numeric", no_argument, NULL, 'N'},
-	{"quiet", no_argument, NULL, 'q'},
 	{"special", no_argument, NULL, 'S'},
 	{"upper", no_argument, NULL, 'U'},
 	{NULL, 0, NULL, 0}
 };
 
-_Noreturn void usage(int const status)
+_Noreturn void usage(int const status, char const *const name)
 {
+	printf("Usage: %s [OPTION]... LEN\n\n", name);
 	if(status != EXIT_SUCCESS) {
-		fprintf(stderr, "Usage: %s [OPTION]...\n", PROGRAM_NAME);
-		fprintf(stderr, "Try '%s --help' for more information.\n",
-				PROGRAM_NAME);
+		fprintf(stderr, "Try '%s --help' for more information.\n", name);
 	} else {
-		printf("Usage: %s [LEN] [OPTION]...\n", PROGRAM_NAME);
-		puts("Generate cryptographically secure strings.");
-		printf("Example: %s 16 -LNSU\n", PROGRAM_NAME);
+		puts("Generate cryptographically secure strings.\n");
+		printf("Example: %s -LN 64\n", name);
 		puts("\nOptions:\n\
-  -h, --help       display this help text and exit\n\
-  -L, --lower      generate lowercase letters\n\
-  -N, --numeric    generate numeric digits\n\
-  -q, --quiet      disable warnings\n\
-  -S, --special    generate special characters\n\
-  -U, --upper      generate uppercase letters");
+  -A, --all           use all character sets (lower, numeric, special, upper)\n\
+  -h, --help          display this help text and exit\n\
+  -L, --lower         generate lowercase letters\n\
+  -N, --numeric       generate numeric digits\n\
+  -S, --special       generate special characters\n\
+  -U, --upper         generate uppercase letters\n\
+  -z, --allow-zero    allow zero-length passwords (exit with success)\n");
+		puts("Default length is 16, default character set is '--all'");
 	}
 
 	exit(status);
 }
 
+struct charset {
+	char const *const c;
+	uint32_t const l;
+	bool b;
+};
+
 int main(int const argc, char *const *const argv)
 {
-	char const *const key = (argc > 1) ? argv[1] : NULL;
+	if(sodium_init() < 0)
+		error(EXIT_FAILURE, 0, "libsodium could not be initialized");
 
-	if(key != NULL
-       && (strcmp(key, "-h") == 0 || strcmp(key, "--help") == 0)) {
-		usage(EXIT_SUCCESS);
-	}
+	bool allow_zero = false;
 
-	if(key == NULL)
-		error(EXIT_FAILURE, 0, "first argument must be length");
+	struct charset lower = {
+		"abcdefghijklmnopqrstuvwxyz",
+		(uint32_t)strlen(lower.c), false
+	};
 
-	/* First argument is positional */
-	optarg++;
+	struct charset numeric = {
+		"0123456789",
+		(uint32_t)strlen(numeric.c), false
+	};
 
-	quiet = false;
+	struct charset special = {
+		"!@#$%^&*()-_=+`~[]{}\\|;:'\",.<>/?",
+		(uint32_t)strlen(special.c), false
+	};
 
-	bool lower_b = false,
-		 upper_b = false,
-		 numeric_b = false,
-		 special_b = false;
-
-	uintmax_t const length = strtoumax(key, NULL, STRTOUMAX_BASE);
-
-	uint32_t chars_l = 0;
+	struct charset upper = {
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+		(uint32_t)strlen(upper.c), false
+	};
 
 	int c;
 
-	while((c = getopt_long(argc, argv, "hLNqSU", long_opts, NULL)) != -1) {
+	while((c = getopt_long(argc, argv, "AhLNSUz", long_opts, NULL)) != -1) {
 		switch(c) {
+			case 'A':
+				lower.b = numeric.b = special.b = upper.b = true;
+				break;
 			case 'h':
-				usage(EXIT_SUCCESS);
+				usage(EXIT_SUCCESS, argv[0]);
 				break;
 			case 'L':
-				if(!lower_b) {
-					chars_l += LOWER_L;
-					lower_b = true;
-				}
+				lower.b = true;
 				break;
 			case 'N':
-				if(!numeric_b) {
-					chars_l += NUMERIC_L;
-					numeric_b = true;
-				}
-				break;
-			case 'q':
-				quiet = true;
+				numeric.b = true;
 				break;
 			case 'S':
-				if(!special_b) {
-					chars_l += SPECIAL_L;
-					special_b = true;
-				}
+				special.b = true;
 				break;
 			case 'U':
-				if(!upper_b) {
-					chars_l += UPPER_L;
-					upper_b = true;
-				}
+				upper.b = true;
+				break;
+			case 'z':
+				allow_zero = true;
 				break;
 			default:
-				usage(EXIT_FAILURE);
+				usage(EXIT_FAILURE, argv[0]);
 		}
 	}
 
+	char const *const larg = argv[optind++];
+
+	uintmax_t const length = (larg == NULL ? 16 : strtoumax(larg, NULL, 10));
+
 	if(length == 0) {
-		_warn("length is zero");
-		exit(EXIT_SUCCESS);
+		if(allow_zero)
+			exit(EXIT_SUCCESS);
+		else
+			error(EXIT_FAILURE, 0, "cannot generate zero-length string");
 	}
 
-	if(lower_b + numeric_b + special_b + upper_b == 0) {
-		_warn("no character sets selected");
-		exit(EXIT_SUCCESS);
-	}
+	if(!(lower.b || numeric.b || special.b || upper.b))
+		lower.b = numeric.b = special.b = upper.b = true;
 
-	if(key[0] == '-' && !quiet) {
-		_warn("it appears you entered a negative value, "
-			  "this value will be evaluated in an unsigned context");
-		sleep(2);
-	}
+	uint32_t chars_l = (lower.b * lower.l)
+						+ (numeric.b * numeric.l)
+						+ (special.b * special.l)
+						+ (upper.b * upper.l);
 
 	char *const chars = malloc(chars_l + 1);
 
@@ -154,19 +132,29 @@ int main(int const argc, char *const *const argv)
 
 	chars[0] = '\0';
 
-	if(lower_b)
-		strncat(chars, LOWER, LOWER_L);
+	char *endptr = chars;
 
-	if(numeric_b)
-		strncat(chars, NUMERIC, NUMERIC_L);
+	if(lower.b) {
+		memcpy(endptr, lower.c, lower.l);
+		endptr += lower.l;
+	}
 
-	if(special_b)
-		strncat(chars, SPECIAL, SPECIAL_L);
+	if(numeric.b) {
+		memcpy(endptr, numeric.c, numeric.l);
+		endptr += numeric.l;
+	}
 
-	if(upper_b)
-		strncat(chars, UPPER, UPPER_L);
+	if(special.b) {
+		memcpy(endptr, special.c, special.l);
+		endptr += special.l;
+	}
 
-	for(size_t i = 0; i < length; ++i)
+	if(upper.b) {
+		memcpy(endptr, upper.c, upper.l);
+		endptr += upper.l;
+	}
+
+	for(uintmax_t i = 0; i < length; ++i)
 		putchar(chars[randombytes_uniform(chars_l)]);
 
 	free(chars);
